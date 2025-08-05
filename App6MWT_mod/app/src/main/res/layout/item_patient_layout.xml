@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:padding="16dp">
+    <TextView
+        android:id="@+id/textViewPatientNameItem"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:text="Nombre Paciente Ejemplo"
+        android:textSize="16sp"
+        android:textStyle="bold"/>
+
+    <TextView
+        android:id="@+id/textViewPatientIdItem"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="ID12345"
+        android:textSize="14sp"
+        android:layout_marginStart="8dp"/>
+</LinearLayout>
