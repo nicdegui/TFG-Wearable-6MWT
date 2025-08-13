@@ -135,9 +135,16 @@ fun TestExecutionScreen(
     // LaunchedEffect se ejecuta cuando la `key1` (preparationData) cambia.
     // Útil para inicializar el ViewModel con los datos de preparación cuando la pantalla se carga
     // o cuando estos datos cambian (aunque en este flujo, suelen ser estáticos una vez que se llega aquí).
-    LaunchedEffect(key1 = preparationData) {
-        Log.d("TestExecutionScreen", "LaunchedEffect: Initializing ViewModel with preparationData: ID ${preparationData.patientId}")
-        viewModel.initializeTest(preparationData)
+    LaunchedEffect(key1 = preparationData, key2 = viewModel) { // Agrega viewModel como clave si es necesario, o usa Unit
+        // Llama a initializeTest SOLO si los datos de preparación no se han cargado aún
+        // O si la prueba no está corriendo y no ha terminado (para permitir re-inicializar si se vuelve a esta pantalla
+        // para una nueva configuración después de una prueba completada)
+        if (!uiState.preparationDataLoaded || (!uiState.isTestRunning && uiState.isTestFinished)) {
+            Log.d("TestExecutionScreen", "LaunchedEffect: Inicializando ViewModel. PreparationDataLoaded: ${uiState.preparationDataLoaded}, IsTestRunning: ${uiState.isTestRunning}, IsTestFinished: ${uiState.isTestFinished}")
+            viewModel.initializeTest(preparationData)
+        } else {
+            Log.d("TestExecutionScreen", "LaunchedEffect: ViewModel inicializado previamente y el test debe estar ejecutándose o los datos cargando. Saltandose la reinicialización.")
+        }
     }
 
     // LaunchedEffect para manejar la navegación automática a la pantalla de resultados.

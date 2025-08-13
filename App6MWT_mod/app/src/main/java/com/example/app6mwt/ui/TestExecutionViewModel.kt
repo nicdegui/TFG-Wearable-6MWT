@@ -123,6 +123,8 @@ data class TestExecutionUiState(
     val currentTimeMillis: Long = 0L, // Tiempo transcurrido de la prueba
     val currentTimeFormatted: String = "00:00", // Tiempo formateado para mostrar
     val distanceMeters: Float = 0f, // Distancia total recorrida
+    val accumulatedDistanceBeforeLastReconnect: Float = 0f,
+    val lastKnownTotalStepsBeforeReconnect: Int? = null,
 
     // Datos de sensores en tiempo real (visibles incluso fuera de la prueba)
     val currentSpo2: Int? = null,
@@ -423,50 +425,90 @@ class TestExecutionViewModel @Inject constructor(
     }
 
     /**
-     * NUEVA: Observa el flujo de datos (WearableDeviceData) provenientes del ACELERÓMETRO.
+     * Observa el flujo de datos (WearableDeviceData) provenientes del ACELERÓMETRO.
      * Calcula la distancia si la prueba está en curso.
      * Actualiza el estado visual del acelerómetro en la UI.
      */
     private fun observeRawAccelerometerData() {
-        bluetoothService.wearableDeviceData // Datos del Acelerómetro (Wearable)
+        var previousTotalStepsFromWearable: Int? = null // Para detectar la primera lectura tras una conexión
+
+        bluetoothService.wearableDeviceData
             .onEach { wearableData ->
-                var newDistance =
-                    _uiState.value.distanceMeters // Mantener distancia actual por defecto
-
-                if (_uiState.value.isTestRunning && patientStrideLength > 0f) {
-                    val currentTotalSteps = wearableData.totalSteps
-                    if (currentTotalSteps != null && initialStepsAtTestStart != null) {
-                        // Asegurarse de que los pasos no sean negativos
-                        // (podría pasar si el wearable se reinicia o initialStepsAtTestStart es mayor por error)
-                        val stepsTakenDuringTest =
-                            (currentTotalSteps - initialStepsAtTestStart!!).coerceAtLeast(0)
-                        newDistance = stepsTakenDuringTest * patientStrideLength.toFloat()
-                    } else if (currentTotalSteps == null && initialStepsAtTestStart != null) {
-                        // Si perdemos la cuenta de pasos pero la prueba inició con un conteo
-                        Log.w("AccelData", "Total steps from wearable is null, but test had initial steps. Distance calculation paused.")
-                        // Mantener la última distancia conocida o marcar como "datos no disponibles"
-                    }
-                }
-
                 _uiState.update { currentState ->
-                    // El estado de conexión del acelerómetro se actualiza en observeAccelerometerConnectionStatus
-                    // Aquí solo actualizamos la distancia y si está conectado (basado en el estado del servicio)
-                    val isStillConnected =
-                        bluetoothService.wearableConnectionStatus.value.isConsideredConnectedOrSubscribed()
+                    var newDistance = currentState.distanceMeters
+                    var currentSegmentInitialSteps = initialStepsAtTestStart // Este es el del inicio de la PRUEBA o del ÚLTIMO reinicio del wearable.
+                    var accumulatedDist = currentState.accumulatedDistanceBeforeLastReconnect
+                    var newLastKnownSteps = currentState.lastKnownTotalStepsBeforeReconnect
+
+
+                    val isCurrentlyConnected = bluetoothService.wearableConnectionStatus.value.isConsideredConnectedOrSubscribed()
+
+                    if (currentState.isTestRunning && patientStrideLength > 0f) {
+                        val currentTotalStepsFromWearable = wearableData.totalSteps
+
+                        if (currentTotalStepsFromWearable != null) {
+                            // Escenario A: Es la primera lectura válida después de que isTestRunning es true
+                            // O es la primera lectura después de una RECONEXIÓN
+                            if (currentSegmentInitialSteps == null || (previousTotalStepsFromWearable == null && isCurrentlyConnected)) {
+                                Log.d("AccelData", "Nueva referencia de pasos. Total actual: $currentTotalStepsFromWearable. Dist acumulada: $accumulatedDist. initialStepsAtTestStart ANTES: $initialStepsAtTestStart")
+                                // Si previousTotalStepsFromWearable era null, es la primera lectura de este flujo o tras reconexión.
+                                // La 'accumulatedDist' ya debería tener la distancia antes de la desconexión.
+                                // Establecemos los pasos iniciales para ESTE NUEVO SEGMENTO de conexión.
+                                initialStepsAtTestStart = currentTotalStepsFromWearable // Referencia para el nuevo segmento
+                                currentSegmentInitialSteps = currentTotalStepsFromWearable
+                                Log.d("AccelData", "initialStepsAtTestStart DESPUÉS: $initialStepsAtTestStart")
+                                // No se suman pasos en esta primera lectura, la distancia es la acumulada.
+                                newDistance = accumulatedDist
+                            }
+                            // Escenario B: Reinicio del contador del wearable DETECTADO
+                            else if (newLastKnownSteps != null &&
+                                currentTotalStepsFromWearable < newLastKnownSteps &&
+                                currentTotalStepsFromWearable < currentSegmentInitialSteps // Importante: menor que el inicio del segmento actual
+                            ) {
+                                Log.w("AccelData", "Reinicio de contador de pasos del wearable detectado. Pasos actuales: $currentTotalStepsFromWearable, Últimos conocidos: $newLastKnownSteps, Iniciales de segmento: $currentSegmentInitialSteps")
+                                // La distancia calculada hasta *antes* de este reinicio se convierte en la nueva base acumulada.
+                                accumulatedDist = currentState.distanceMeters // Guardar la distancia TOTAL lograda hasta ahora
+                                initialStepsAtTestStart = currentTotalStepsFromWearable // Nuevo inicio para este segmento
+                                currentSegmentInitialSteps = currentTotalStepsFromWearable
+                                newDistance = accumulatedDist // La distancia es la acumulada hasta este punto
+                                Log.d("AccelData", "Nueva distancia acumulada por reinicio wearable: $accumulatedDist. Nuevos pasos iniciales para este segmento: $currentSegmentInitialSteps")
+                            }
+                            // Escenario C: Flujo normal de datos, calcular incremento de distancia
+                            else if (currentSegmentInitialSteps != null) { // Debería estar definido
+                                val stepsTakenSinceLastReference = (currentTotalStepsFromWearable - currentSegmentInitialSteps).coerceAtLeast(0)
+                                val distanceThisSegment = stepsTakenSinceLastReference * patientStrideLength.toFloat()
+                                newDistance = accumulatedDist + distanceThisSegment
+                            } else {
+                                Log.w("AccelData", "currentSegmentInitialSteps es null inesperadamente. Usando distancia acumulada: $accumulatedDist")
+                                newDistance = accumulatedDist
+                            }
+
+                            newLastKnownSteps = currentTotalStepsFromWearable // Actualizar para la próxima iteración
+                        } else { // currentTotalStepsFromWearable es null
+                            Log.w("AccelData", "Total steps from wearable is null. Manteniendo distancia: $newDistance")
+                            // Mantener la distancia (que incluye la accumulatedDist).
+                            // Si se desconecta, `accumulatedDist` se actualiza en `observeAccelerometerConnectionStatus`.
+                        }
+                        previousTotalStepsFromWearable = currentTotalStepsFromWearable // Guardar para la próxima
+                    } else if (!currentState.isTestRunning && !currentState.isTestFinished) {
+                        // Solo resetear si la prueba no está corriendo Y no ha finalizado
+                        newDistance = 0f
+                        accumulatedDist = 0f
+                        newLastKnownSteps = null
+                        initialStepsAtTestStart = null // Resetear al detener/reiniciar prueba
+                        previousTotalStepsFromWearable = null
+                    }
 
                     currentState.copy(
-                        distanceMeters = newDistance, // Actualizar la distancia
-                        isAccelerometerConnected = isStillConnected // Reflejar si sigue conectado
-                        // El icono y mensaje del acelerómetro se actualizan en observeAccelerometerConnectionStatus
+                        distanceMeters = newDistance,
+                        isAccelerometerConnected = isCurrentlyConnected,
+                        accumulatedDistanceBeforeLastReconnect = accumulatedDist,
+                        lastKnownTotalStepsBeforeReconnect = newLastKnownSteps
                     )
                 }
             }
-            .catch { e ->
-                Log.e(
-                    "TestExecutionVM",
-                    "Error en flow WearableDeviceData (Accelerometer): ${e.message}",
-                    e
-                )
+            .catch { e -> Log.e("TestExecutionVM", "Error en flow WearableDeviceData (Accelerometer): ${e.message}", e)
+                _uiState.update { it.copy(isAccelerometerConnected = false) } // Marcar como desconectado en error
             }
             .launchIn(viewModelScope)
     }
@@ -836,7 +878,7 @@ class TestExecutionViewModel @Inject constructor(
     }
 
     /**
-     * NUEVA: Observa los cambios en el estado de la conexión del ACELERÓMETRO.
+     * Observa los cambios en el estado de la conexión del ACELERÓMETRO.
      */
     private fun observeAccelerometerConnectionStatus() {
         bluetoothService.wearableConnectionStatus // Estado del Acelerómetro
@@ -848,12 +890,15 @@ class TestExecutionViewModel @Inject constructor(
                         isBluetoothAdapterEnabled = bluetoothService.isBluetoothEnabled()
                     )
 
+                    var newAccumulatedDistance = currentState.accumulatedDistanceBeforeLastReconnect
                     var userMessageUpdate: String? = currentState.userMessage
                     val isNowConnected = status.isConsideredConnectedOrSubscribed()
 
                     if (currentState.isTestRunning) {
                         // Mensajes específicos si se pierde la conexión del acelerómetro DURANTE la prueba
                         if (!isNowConnected && currentState.isAccelerometerConnected) { // Si estaba conectado y ahora no
+                            Log.d("AccelConnection", "Acelerómetro desconectado durante la prueba. Distancia actual: ${currentState.distanceMeters}")
+                            newAccumulatedDistance = currentState.distanceMeters
                             userMessageUpdate = when (status) {
                                 BleConnectionStatus.DISCONNECTED_ERROR,
                                 BleConnectionStatus.ERROR_GENERIC -> "¡Conexión con acelerómetro perdida!"
@@ -861,11 +906,18 @@ class TestExecutionViewModel @Inject constructor(
                                 BleConnectionStatus.ERROR_BLUETOOTH_DISABLED -> "Bluetooth desactivado. Se perdió conexión con acelerómetro."
                                 else -> "Acelerómetro desconectado inesperadamente."
                             }
-                        } else if (isNowConnected && !currentState.isAccelerometerConnected &&
-                            (currentState.userMessage?.contains("Acelerómetro perdida", ignoreCase = true) == true ||
-                            currentState.userMessage?.contains("Acelerómetro desconectado", ignoreCase = true) == true)
-                        ) {
-                            userMessageUpdate = "Conexión con acelerómetro restaurada."
+                        } else if (isNowConnected && !currentState.isAccelerometerConnected) { // Si NO estaba conectado y AHORA SÍ
+                            Log.d("AccelConnection", "Acelerómetro RECONECTADO durante la prueba. Distancia acumulada previa: $newAccumulatedDistance")
+                            // En este punto, `newAccumulatedDistance` debería tener la distancia guardada
+                            // y `initialStepsAtTestStart` se establecerá con la *primera lectura de pasos post-reconexión*
+                            // dentro de `observeRawAccelerometerData`.
+                            // lastKnownTotalStepsBeforeReconnect también se usará/actualizará allí.
+
+                            // Lógica de mensajes de usuario
+                            if (currentState.userMessage?.contains("Acelerómetro perdida", ignoreCase = true) == true ||
+                                currentState.userMessage?.contains("Acelerómetro desconectado", ignoreCase = true) == true) {
+                                userMessageUpdate = "Conexión con acelerómetro restaurada."
+                            }
                         }
                     } else if (currentState.isConfigPhase || currentState.isTestFinished) {
                         // Mensajes si no está conectado fuera de la prueba
@@ -888,7 +940,8 @@ class TestExecutionViewModel @Inject constructor(
                         userMessage = userMessageUpdate,
                         accelerometerBluetoothIconStatus = if (currentState.isAttemptingAccelerometerForceReconnect) currentState.accelerometerBluetoothIconStatus else newIconStatus, // Evitar cambiar si el OTRO se está reconectando
                         accelerometerBluetoothStatusMessage = if (currentState.isAttemptingAccelerometerForceReconnect) currentState.accelerometerBluetoothStatusMessage else newStatusMessage,
-                        isAccelerometerConnected = isNowConnected
+                        isAccelerometerConnected = isNowConnected,
+                        accumulatedDistanceBeforeLastReconnect = newAccumulatedDistance
                     )
                 }
             }
@@ -937,10 +990,21 @@ class TestExecutionViewModel @Inject constructor(
      * @param preparationData Los datos del paciente y la configuración basal para la prueba.
      */
     fun initializeTest(preparationData: TestPreparationData) {
-        Log.d(
-            "TestExecutionVM",
-            "Inicializando prueba con datos para: ${preparationData.patientFullName}"
-        )
+        // Si la prueba ya está corriendo y solo es una recomposición (ej. rotación),
+        // no queremos resetear todo. Solo asegurarnos que los datos del paciente están y preparationDataLoaded es true.
+        if (_uiState.value.isTestRunning) {
+            Log.d("ViewModel", "initializeTest llamado pero el test en ya en ejecución. Actualizando datos de paciente y asegurando datos cargados.")
+            _uiState.update {
+                it.copy(
+                    patientId = preparationData.patientId,
+                    patientFullName = preparationData.patientFullName,
+                    preparationDataLoaded = true
+                )
+            }
+            return
+        }
+
+        Log.d("TestExecutionVM", "Inicializando prueba con datos para: ${preparationData.patientFullName}")
         // Cancelar actividades de prueba en curso (timers, etc.), pero no el procesamiento de datos en vivo.
         cancelTestInProgressActivities(restartLiveDataProcessing = false)
         currentTestPreparationData = preparationData // Guardar los datos de preparación
@@ -999,6 +1063,8 @@ class TestExecutionViewModel @Inject constructor(
             currentTimeMillis = 0L,
             currentTimeFormatted = formatTimeDisplay(0L),
             distanceMeters = 0f,
+            accumulatedDistanceBeforeLastReconnect = 0f,
+            lastKnownTotalStepsBeforeReconnect = null,
 
             // Estado inicial de los sensores
             currentSpo2 = displaySpo2,
@@ -1130,12 +1196,12 @@ class TestExecutionViewModel @Inject constructor(
 
         // --- CAPTURAR PASOS INICIALES ---
         // Hacerlo ANTES del _uiState.update que cambia isTestRunning
-        val currentWearableData = bluetoothService.wearableDeviceData.value
-        initialStepsAtTestStart = currentWearableData.totalSteps
+        val currentWearableDataOnStart = bluetoothService.wearableDeviceData.value // Captura una vez
+        initialStepsAtTestStart = currentWearableDataOnStart?.totalSteps
         var accelerometerWarning: String? = null
         if (initialStepsAtTestStart == null && _uiState.value.isAccelerometerConnected) {
             Log.w("TestExecutionVM", "Pasos iniciales del acelerómetro son NULL al iniciar la prueba, aunque esté conectado.")
-            accelerometerWarning = "Acelerómetro sin datos de pasos. Distancia podría no medirse."
+            accelerometerWarning = "Acelerómetro sin datos de pasos. Distancia podría no medirse inicialmente."
         } else if (initialStepsAtTestStart != null) {
             Log.i("TestExecutionVM", "Pasos iniciales del acelerómetro al inicio de la prueba: $initialStepsAtTestStart")
         }
@@ -1160,6 +1226,8 @@ class TestExecutionViewModel @Inject constructor(
                 currentTimeMillis = 0L,
                 currentTimeFormatted = formatTimeDisplay(0L),
                 distanceMeters = 0.0f,
+                accumulatedDistanceBeforeLastReconnect = 0f,
+                lastKnownTotalStepsBeforeReconnect = initialStepsAtTestStart,
                 // Añadir el primer punto de dato si los valores iniciales son válidos
                 spo2DataPoints = if (initialSpo2ForTest != null && initialSpo2ForTest > 0) listOf(
                     DataPoint(0L, initialSpo2ForTest.toFloat(), 0f)
@@ -1230,6 +1298,8 @@ class TestExecutionViewModel @Inject constructor(
         spo2ReadingsSinceLastTrendCalc = 0
         hrReadingsSinceLastTrendCalc = 0
 
+        initialStepsAtTestStart = null
+
         // Restablecer el estado de la UI a la fase de configuración
         _uiState.update {
             it.copy(
@@ -1241,6 +1311,8 @@ class TestExecutionViewModel @Inject constructor(
                 currentTimeFormatted = formatTimeDisplay(0L),
 
                 distanceMeters = 0f,
+                accumulatedDistanceBeforeLastReconnect = 0f,
+                lastKnownTotalStepsBeforeReconnect = null,
                 spo2Trend = Trend.STABLE, // Resetear tendencias
                 heartRateTrend = Trend.STABLE,
                 spo2DataPoints = emptyList(),
@@ -1280,7 +1352,7 @@ class TestExecutionViewModel @Inject constructor(
      * Llama a `initializeTest` con los datos del paciente actual para volver
      * al estado de configuración como si se empezara una nueva prueba para ese paciente.
      */
-    fun confirmReinitializeTestToConfig() { // Renombrada para claridad
+    fun confirmReinitializeTestToConfig() {
         _uiState.update { it.copy(showMainActionConfirmationDialog = false) } // Cerrar diálogo
         currentTestPreparationData?.let { prepData ->
             initializeTest(prepData) // Reinicializar con los mismos datos de paciente
