@@ -19,12 +19,11 @@ El sistema se divide en dos componentes software principales:
 #### Dispositivo vestible (firmware)
 *   **Lectura de sensores:** inicialización y lectura continua de los datos del sensor inercial (IMU LSM9DS1).
 *   **Detección de pasos:** implementación de un algoritmo para procesar la señal del acelerómetro y contar los pasos en tiempo real.
-*   **Estimación de distancia:** cálculo de la distancia acumulada a partir de los pasos detectados.
-*   **Comunicación BLE:** creación de un servicio **Bluetooth Low Energy (BLE)** con una característica personalizada para transmitir la distancia recorrida a la aplicación Android.
+*   **Comunicación BLE:** creación de un servicio **Bluetooth Low Energy (BLE)** con una característica personalizada para transmitir el número de pasos total a la aplicación Android.
 
 #### Aplicación Android (modificada)
 *   **Gestión de doble conexión BLE:** refactorización del módulo de comunicación para conectar y gestionar datos de **dos dispositivos simultáneamente**: el pulsioxímetro y el nuevo dispositivo vestible.
-*   **Integración automática de distancia:** recepción e integración de los datos de distancia en la pantalla de ejecución, reemplazando la entrada manual de vueltas.
+*   **Integración automática de pasos y cálculo de distancia:** recepción e integración de los datos de pasos en la pantalla de ejecución, junto con datos antropométricos del paciente de la pantalla de preparación para calcular la distancia recorrida, reemplazando la entrada manual de vueltas.
 *   **Monitorización completa:** mantiene todas las funcionalidades de la versión original (gestión de pacientes, SpO₂, FC, PDF, etc.), pero ahora con datos de distancia automáticos y de mayor resolución.
 *   **Visualización de datos:** gráficas en tiempo real que combinan los parámetros fisiológicos (SpO₂, FC) con el esfuerzo realizado (distancia).
 
@@ -50,12 +49,6 @@ Este proyecto combina el desarrollo de software embebido y el desarrollo de apli
 *   **Comunicación:** API nativa de Android para [Bluetooth Low Energy (BLE)](https://developer.android.com/guide/topics/connectivity/bluetooth/ble)
 *   **Gráficas:** [MPAndroidChart](https://github.com/PhilJay/MPAndroidChart)
 *   **PDF:** API nativa de Android (`PdfDocument` y `Canvas`)
-
----
-
-## 📸 Capturas de Pantalla
-
-*(Pendiente de añadir capturas del sistema integrado en funcionamiento)*
 
 ---
 
