@@ -51,7 +51,6 @@ Este proyecto combina el desarrollo de software embebido y el desarrollo de apli
 *   **PDF:** API nativa de Android (`PdfDocument` y `Canvas`)
 
 ---
----
 
 ## 👤 Autor
 
