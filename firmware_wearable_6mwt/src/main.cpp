@@ -32,41 +32,26 @@ bool deviceConnected = false;
 class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
       deviceConnected = true;
-      Serial.println("Dispositivo conectado");
     }
 
     void onDisconnect(BLEServer* pServer) {
       deviceConnected = false;
-      Serial.println("Dispositivo desconectado, reiniciando advertising...");
       pServer->getAdvertising()->start(); // Reiniciar el "anuncio" para que se pueda volver a encontrar
     }
 };
 
 void setup() {
-  Serial.begin(115200);
-  
-  // Esperar un máximo de 3 segundos para que se conecte el puerto serie.
-  // Si no se conecta, el programa continúa igualmente.
-  unsigned long start_time = millis();
-  while (!Serial && (millis() - start_time) < 3000) {
-    delay(10);
-  }
-
-  Serial.println("Iniciando Wearable 6MWT v1.0");
-
   // Inicialización del sensor
   if (!lsm.begin()) {
-    Serial.println("Error: No se pudo encontrar el sensor LSM9DS1.");
     while (1) { delay(10); }
   }
-  Serial.println("Sensor LSM9DS1 encontrado.");
   
+  // Solo se inicializa el acelerómetro (no magnetómetro ni giroscopio)
   lsm.setupAccel(lsm.LSM9DS1_ACCELRANGE_2G);
-  lsm.setupMag(lsm.LSM9DS1_MAGGAIN_4GAUSS);
-  lsm.setupGyro(lsm.LSM9DS1_GYROSCALE_245DPS);
+
+  delay(200); // Pequeña espera antes de iniciar BLE
 
   // ---Inicialización del BLE ---
-  Serial.println("Inicializando BLE...");
   
   // 1. Inicializar el dispositivo BLE y ponerle un nombre
   BLEDevice::init("WearableDistancia6MWT");
@@ -96,7 +81,6 @@ void setup() {
   pAdvertising->setScanResponse(true);
   BLEDevice::startAdvertising();
   
-  Serial.println("Servicio BLE iniciado. Esperando conexión...");
 }
 
 void loop() {
@@ -121,14 +105,9 @@ void loop() {
     // Si detecta un paso, incrementa el contador Y la distancia
     stepCount++;
     lastStepTime = currentTime;
-    
-    // Imprimir por el monitor serie para depurar
-    Serial.print("¡PASO! Total: ");
-    Serial.println(stepCount);
-
     highPeakDetected = false; 
 
-    // --- LÓGICA DE NOTIFICACIÓN ---
+    // --- LÓGICA DE NOTIFICACIÓN BLE ---
     if (deviceConnected) {
       // Convertir el entero 'stepCount' a un array de 4 bytes
       // El formato "Little Endian" es el estándar en BLE
@@ -141,7 +120,6 @@ void loop() {
       // Enviar los 4 bytes del entero
       pDistanceCharacteristic->setValue(data_to_send, 4);
       pDistanceCharacteristic->notify();
-      Serial.println("  -> Notificación BLE enviada (pasos).");
     }
   }
   
